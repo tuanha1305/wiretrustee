@@ -1,11 +1,12 @@
 package internal
 
 import (
-	ice "github.com/pion/ice/v2"
 	log "github.com/sirupsen/logrus"
+	ice "github.com/wiretrustee/ice/v2"
 	"github.com/wiretrustee/wiretrustee/iface"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 	"net"
+	"time"
 )
 
 // WgProxy an instance of an instance of the Connection Wireguard Proxy
@@ -86,6 +87,8 @@ func (p *WgProxy) Start(remoteConn *ice.Conn) error {
 // blocks
 func (p *WgProxy) proxyToRemotePeer(remoteConn *ice.Conn) {
 
+	tstart := time.Now()
+
 	buf := make([]byte, 1500)
 	for {
 		select {
@@ -96,6 +99,12 @@ func (p *WgProxy) proxyToRemotePeer(remoteConn *ice.Conn) {
 			n, err := p.wgConn.Read(buf)
 			if err != nil {
 				continue
+			}
+
+			if tstart.Add(10*time.Second).Unix() < time.Now().Unix() {
+				tstart = time.Now()
+				log.Debugln("received: ", string(buf[:32]))
+				log.Debugln("received: ", string(buf[:32]))
 			}
 
 			_, err = remoteConn.Write(buf[:n])
