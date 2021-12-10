@@ -6,6 +6,7 @@ import (
 	"github.com/pion/logging"
 	log "github.com/sirupsen/logrus"
 	ice "github.com/wiretrustee/ice/v2"
+	"github.com/wiretrustee/wiretrustee/iface"
 	"golang.zx2c4.com/wireguard/wgctrl/wgtypes"
 	"net"
 	"sync"
@@ -16,7 +17,8 @@ var (
 	// DefaultWgKeepAlive default Wireguard keep alive constant
 	DefaultWgKeepAlive = 20 * time.Second
 	privateIPBlocks    []*net.IPNet
-	mux                *net.UDPConn
+	muxConn            *net.UDPConn
+	udpmux             *ice.UDPMuxDefault
 )
 
 type Status string
@@ -44,7 +46,8 @@ func init() {
 		}
 		privateIPBlocks = append(privateIPBlocks, block)
 	}
-	mux, _ = net.ListenUDP("udp", &net.UDPAddr{Port: 50505})
+	muxConn, _ = net.ListenUDP("udp", &net.UDPAddr{Port: 50505})
+	udpmux = ice.NewUDPMuxDefault(ice.UDPMuxParams{UDPConn: muxConn})
 }
 
 // ConnConfig Connection configuration struct
@@ -128,7 +131,7 @@ func NewConnection(config ConnConfig,
 // Will block until the connection has successfully established
 func (conn *Connection) Open(timeout time.Duration) error {
 	lf := logging.NewDefaultLoggerFactory()
-	lf.DefaultLogLevel.Set(logging.LogLevelDebug)
+	lf.DefaultLogLevel.Set(logging.LogLevelInfo)
 
 	// create an ice.Agent that will be responsible for negotiating and establishing actual peer-to-peer connection
 	a, err := ice.NewAgent(&ice.AgentConfig{
@@ -144,7 +147,7 @@ func (conn *Connection) Open(timeout time.Duration) error {
 			return !ok
 		},
 		LoggerFactory: lf,
-		UDPMux:        ice.NewUDPMuxDefault(ice.UDPMuxParams{UDPConn: mux}),
+		UDPMux:        udpmux,
 	})
 	if err != nil {
 		return err
@@ -194,7 +197,6 @@ func (conn *Connection) Open(timeout time.Duration) error {
 			log.Errorf("failed establishing connection with the remote peer %s %s", conn.Config.RemoteWgKey.String(), err)
 			return err
 		}
-
 		var pair *ice.CandidatePair
 		pair, err = conn.agent.GetSelectedCandidatePair()
 		if err != nil {
@@ -204,20 +206,20 @@ func (conn *Connection) Open(timeout time.Duration) error {
 		useProxy := useProxy(pair)
 
 		// in case the remote peer is in the local network or one of the peers has public static IP -> no need for a Wireguard proxy, direct communication is possible.
-		//if !useProxy {
-		//	log.Debugf("it is possible to establish a direct connection (without proxy) to peer %s - my addr: %s, remote addr: %s", conn.Config.RemoteWgKey.String(), pair.Local, pair.Remote)
-		//	err = conn.wgProxy.StartLocal(fmt.Sprintf("%s:%d", pair.Remote.Address(), iface.WgPort))
-		//	if err != nil {
-		//		return err
-		//	}
-		//
-		//} else {
-		log.Debugf("establishing secure tunnel to peer %s via selected candidate pair %s", conn.Config.RemoteWgKey.String(), pair)
-		err = conn.wgProxy.Start(remoteConn)
-		if err != nil {
-			return err
+		if !useProxy {
+			log.Debugf("it is possible to establish a direct connection (without proxy) to peer %s - my addr: %s, remote addr: %s", conn.Config.RemoteWgKey.String(), pair.Local, pair.Remote)
+			err = conn.wgProxy.StartLocal(fmt.Sprintf("%s:%d", pair.Remote.Address(), iface.WgPort))
+			if err != nil {
+				return err
+			}
+
+		} else {
+			log.Debugf("establishing secure tunnel to peer %s via selected candidate pair %s", conn.Config.RemoteWgKey.String(), pair)
+			err = conn.wgProxy.Start(remoteConn)
+			if err != nil {
+				return err
+			}
 		}
-		//}
 
 		relayed := pair.Remote.Type() == ice.CandidateTypeRelay || pair.Local.Type() == ice.CandidateTypeRelay
 
